@@ -14,4 +14,4 @@ python -m torch.distributed.launch --master_port 10029 --nproc_per_node=$gpu_num
   MODEL.WEIGHT  "$archive_dir/model_0014000.pth" \
   MODEL.ROI_RELATION_HEAD.EVALUATE_REL_PROPOSAL False \
   DATASETS.VG_TEST "('VG_stanford_filtered_with_attribute_test', )" \
-  TEST.ALLOW_LOAD_FROM_CACHE True
+  TEST.ALLOW_LOAD_FROM_CACHE False # 把这个开了，会在测试时候跳过前向推理过程，直接拿之前的缓存结果开始评估，所以如果你要收集前向推理过程的向量，这个就关

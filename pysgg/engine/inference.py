@@ -32,6 +32,13 @@ def compute_on_dataset(model, data_loader, device, synchronize_gather=True, time
     # Store relation embeddings for PCA visualization
     relation_embeddings_data = []
 
+    # Initialize predictor attribute for collecting embeddings across all batches
+    if hasattr(model.roi_heads, 'relation') and hasattr(model.roi_heads.relation, 'predictor'):
+        predictor = model.roi_heads.relation.predictor
+        if hasattr(predictor, 'saved_relation_embeddings'):
+            # Initialize to None, will be set in first forward pass
+            pass
+
     for _, batch in enumerate(tqdm(data_loader)):
         with torch.no_grad():
             images, targets, image_ids = batch
@@ -46,22 +53,31 @@ def compute_on_dataset(model, data_loader, device, synchronize_gather=True, time
                 output = model(images.to(device), targets, logger=logger)
 
             # Collect relation embeddings after forward pass
-            if hasattr(model.roi_heads, 'relation') and hasattr(model.roi_heads.relation, 'saved_relation_embeddings'):
-                embeddings = model.roi_heads.relation.saved_relation_embeddings
-                if embeddings is not None:
-                    # Get ground truth labels for these relations
-                    for i, target in enumerate(targets):
-                        gt_rels = target.get_field('relation_tuple').cpu().numpy()
-                        if len(gt_rels) > 0:
-                            # Each embedding corresponds to a relation in the image
-                            # Store embeddings with their gt labels
-                            for j, gt_rel in enumerate(gt_rels):
-                                if j < len(embeddings):
-                                    relation_embeddings_data.append({
-                                        'embedding': embeddings[j].cpu().numpy(),
-                                        'gt_label': int(gt_rel[2]) if len(gt_rel) > 2 else 0,
-                                        'image_id': image_ids[i]
-                                    })
+            if hasattr(model.roi_heads, 'relation') and hasattr(model.roi_heads.relation, 'predictor'):
+                predictor = model.roi_heads.relation.predictor
+                if hasattr(predictor, 'saved_relation_embeddings'):
+                    embeddings = predictor.saved_relation_embeddings
+                    if embeddings is not None:
+                        # Get ground truth labels for these relations
+                        for i, target in enumerate(targets):
+                            gt_rels = target.get_field('relation_tuple').cpu().numpy()
+                            if len(gt_rels) > 0:
+                                # Each embedding corresponds to a relation in the image
+                                # Store embeddings with their gt labels
+                                for j, gt_rel in enumerate(gt_rels):
+                                    if j < len(embeddings):
+                                        relation_embeddings_data.append({
+                                            'embedding': embeddings[j].cpu().numpy(),
+                                            'gt_label': int(gt_rel[2]) if len(gt_rel) > 2 else 0,
+                                            'image_id': image_ids[i]
+                                        })
+                        # DEBUG: print collection progress every 1000 samples
+                        if len(relation_embeddings_data) % 5000 == 0:
+                            logger.info(f"Collected {len(relation_embeddings_data)} relation embeddings so far...")
+                    else:
+                        # DEBUG: warn if embeddings is None
+                        if len(relation_embeddings_data) % 5000 == 0:
+                            logger.warning(f"Batch: saved_relation_embeddings is None or empty")
 
             if timer:
                 if not cfg.MODEL.DEVICE == 'cpu':

@@ -589,7 +589,6 @@ def save_predcls_json_files(eval_mean_recall, evaluator, checkpoint_folder, visu
 
     # Calculate confidence statistics
     predicate_stats = {}
-    all_confidences = []
     total_recalled = 0
 
     for image_idx, prediction in enumerate(predictions):
@@ -598,9 +597,23 @@ def save_predcls_json_files(eval_mean_recall, evaluator, checkpoint_folder, visu
         # relation_labels is in groundtruth, not prediction
         groundtruth = groundtruths[image_idx]
         gt_rels = groundtruth.get_field('relation_tuple').long().detach().cpu().numpy()
+        # Get image_id from prediction if available, otherwise use index
+        try:
+            image_id = prediction.get_field('image_id')
+        except (AttributeError, KeyError):
+            # If image_id not in prediction, try groundtruth
+            try:
+                image_id = groundtruth.get_field('image_id')
+            except KeyError:
+                # Use index as fallback
+                image_id = str(image_idx)
 
         if len(gt_rels) == 0:
             continue
+
+        # Get object labels from ground truth
+        gt_boxes = groundtruth.get_field('labels')
+        obj_labels = dataset.ind_to_classes
 
         # Process each ground truth relation
         for rel_idx, gt_rel in enumerate(gt_rels):
@@ -612,6 +625,12 @@ def save_predcls_json_files(eval_mean_recall, evaluator, checkpoint_folder, visu
                 continue
 
             gt_predicate = predicate_labels[gt_predicate_idx]
+
+            # Get subject and object labels
+            gt_subject_idx = int(gt_rel[0])
+            gt_object_idx = int(gt_rel[1])
+            gt_subject = obj_labels[gt_subject_idx] if gt_subject_idx < len(obj_labels) else "unknown"
+            gt_object = obj_labels[gt_object_idx] if gt_object_idx < len(obj_labels) else "unknown"
 
             # Get prediction scores for this relation
             pred_scores = rel_scores[rel_idx]
@@ -628,38 +647,38 @@ def save_predcls_json_files(eval_mean_recall, evaluator, checkpoint_folder, visu
                 total_recalled += 1
                 if gt_predicate not in predicate_stats:
                     predicate_stats[gt_predicate] = []
-                predicate_stats[gt_predicate].append(gt_confidence)
-                all_confidences.append(gt_confidence)
+                # Save info for each recalled sample
+                predicate_stats[gt_predicate].append({
+                    'image_id': str(image_id),
+                    'subject': gt_subject,
+                    'object': gt_object,
+                    'confidence': gt_confidence
+                })
 
-    # Calculate statistics for each predicate
+    # Create summary in the expected format
     confidence_summary = {
-        "predicate_stats": {},
-        "overall_stats": {
-            "total_recalled_samples": total_recalled,
-            "overall_avg_confidence": float(np.mean(all_confidences)) if all_confidences else 0.0,
-            "overall_std_confidence": float(np.std(all_confidences)) if all_confidences else 0.0
-        }
+        "by_predicate": {},
+        "stats": {}
     }
 
     for predicate in predicate_labels:
         if predicate in predicate_stats and len(predicate_stats[predicate]) > 0:
-            confidences = predicate_stats[predicate]
-            confidence_summary["predicate_stats"][predicate] = {
-                "total_recalled": len(confidences),
+            samples = predicate_stats[predicate]
+            confidences = [s['confidence'] for s in samples]
+            confidence_summary["by_predicate"][predicate] = samples
+            confidence_summary["stats"][predicate] = {
+                "count": len(confidences),
                 "avg_confidence": float(np.mean(confidences)),
-                "std_confidence": float(np.std(confidences)),
                 "min_confidence": float(np.min(confidences)),
-                "max_confidence": float(np.max(confidences)),
-                "median_confidence": float(np.median(confidences))
+                "max_confidence": float(np.max(confidences))
             }
         else:
-            confidence_summary["predicate_stats"][predicate] = {
-                "total_recalled": 0,
+            confidence_summary["by_predicate"][predicate] = []
+            confidence_summary["stats"][predicate] = {
+                "count": 0,
                 "avg_confidence": 0.0,
-                "std_confidence": 0.0,
                 "min_confidence": 0.0,
-                "max_confidence": 0.0,
-                "median_confidence": 0.0
+                "max_confidence": 0.0
             }
 
     # Save confidence summary to visualize directory
@@ -669,4 +688,3 @@ def save_predcls_json_files(eval_mean_recall, evaluator, checkpoint_folder, visu
     print(f"Recall confidence summary saved to: {confidence_json_path}")
 
     print(f"Total recalled samples: {total_recalled}")
-    print(f"Overall average confidence: {confidence_summary['overall_stats']['overall_avg_confidence']:.4f}")
