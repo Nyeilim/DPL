@@ -28,10 +28,15 @@ def compute_on_dataset(model, data_loader, device, synchronize_gather=True, time
     model.eval()
     results_dict = {}
     cpu_device = torch.device("cpu")
+
+    # Store relation embeddings for PCA visualization
+    relation_embeddings_data = []
+
     for _, batch in enumerate(tqdm(data_loader)):
         with torch.no_grad():
             images, targets, image_ids = batch
             targets = [target.to(device) for target in targets]
+
             if timer:
                 timer.tic()
             if cfg.TEST.BBOX_AUG.ENABLED:
@@ -39,6 +44,25 @@ def compute_on_dataset(model, data_loader, device, synchronize_gather=True, time
             else:
                 # relation detection needs the targets
                 output = model(images.to(device), targets, logger=logger)
+
+            # Collect relation embeddings after forward pass
+            if hasattr(model.roi_heads, 'relation') and hasattr(model.roi_heads.relation, 'saved_relation_embeddings'):
+                embeddings = model.roi_heads.relation.saved_relation_embeddings
+                if embeddings is not None:
+                    # Get ground truth labels for these relations
+                    for i, target in enumerate(targets):
+                        gt_rels = target.get_field('relation_tuple').cpu().numpy()
+                        if len(gt_rels) > 0:
+                            # Each embedding corresponds to a relation in the image
+                            # Store embeddings with their gt labels
+                            for j, gt_rel in enumerate(gt_rels):
+                                if j < len(embeddings):
+                                    relation_embeddings_data.append({
+                                        'embedding': embeddings[j].cpu().numpy(),
+                                        'gt_label': int(gt_rel[2]) if len(gt_rel) > 2 else 0,
+                                        'image_id': image_ids[i]
+                                    })
+
             if timer:
                 if not cfg.MODEL.DEVICE == 'cpu':
                     torch.cuda.synchronize()
@@ -54,6 +78,50 @@ def compute_on_dataset(model, data_loader, device, synchronize_gather=True, time
             results_dict.update(
                 {img_id: result for img_id, result in zip(image_ids, output)}
             )
+
+    # Save relation embeddings to file if configured
+    if hasattr(cfg, 'SAVE_RELATION_EMBEDDINGS') and cfg.SAVE_RELATION_EMBEDDINGS:
+        if hasattr(cfg, 'RELATION_EMBEDDINGS_PATH') and cfg.RELATION_EMBEDDINGS_PATH:
+            import pickle
+            os.makedirs(os.path.dirname(cfg.RELATION_EMBEDDINGS_PATH), exist_ok=True)
+
+            # Extract prototypes and sigma from DPL model if available
+            prototypes_data = None
+            if hasattr(model.roi_heads, 'relation') and hasattr(model.roi_heads.relation, 'predictor'):
+                predictor = model.roi_heads.relation.predictor
+                if hasattr(predictor, 'proto_emb') and hasattr(predictor, 'gaussian_emb'):
+                    proto_emb = predictor.proto_emb.data.cpu().numpy()
+                    predicate_proto = predictor.proto_emb.data
+                    predicate_proto_norm = predicate_proto / predicate_proto.norm(dim=1, keepdim=True)
+                    gaussian = predictor.gaussian_emb(predicate_proto_norm)
+                    mu, logsigma = torch.split(gaussian, predictor.cdim, dim=1)
+                    sigma = logsigma.exp().data.cpu().numpy()
+
+                    prototypes_data = {
+                        'proto_emb': proto_emb,
+                        'sigma': sigma,
+                        'model_info': {
+                            'num_rel_cls': predictor.num_rel_cls,
+                            'cdim': predictor.cdim,
+                            'predictor_type': type(predictor).__name__
+                        }
+                    }
+                    logger.info(f"Extracted prototypes: shape={proto_emb.shape}, sigma shape={sigma.shape}")
+                else:
+                    logger.info("Model does not have proto_emb/gaussian_emb. Not saving prototypes.")
+
+            # Save everything together
+            embeddings_output = {
+                'sample_embeddings': relation_embeddings_data,
+                'prototypes': prototypes_data
+            }
+
+            with open(cfg.RELATION_EMBEDDINGS_PATH, 'wb') as f:
+                pickle.dump(embeddings_output, f)
+            logger.info(f"Saved {len(relation_embeddings_data)} sample embeddings to {cfg.RELATION_EMBEDDINGS_PATH}")
+            if prototypes_data is not None:
+                logger.info(f"Also saved prototypes with {prototypes_data['proto_emb'].shape[0]} predicates")
+
     return results_dict
 
 

@@ -1,10 +1,9 @@
 #!/bin/bash
 export OMP_NUM_THREADS=1
-export gpu_num=2
-export EXP=checkpoints
-export CUDA_VISIBLE_DEVICES="7,8"
+export gpu_num=1
+export CUDA_VISIBLE_DEVICES="0"
 
-OUTPATH=$EXP/VG/motif/predcls/put_exp_name
+OUTPATH="/root/autodl-tmp/ckpt"
 mkdir -p $OUTPATH
 cp pysgg/modeling/roi_heads/relation_head/roi_relation_predictors.py $OUTPATH/roi_relation_predictors.py
 

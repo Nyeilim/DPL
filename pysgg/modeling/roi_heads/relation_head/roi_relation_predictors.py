@@ -1339,7 +1339,13 @@ class MotifsLikePredictor_DPL(nn.Module):
                 prod_rep = prod_rep * union_features
 
         deter_dists = self.rel_compress(prod_rep)
-        
+
+        # Save relation embeddings for visualization (only during inference)
+        if not self.training:
+            self.saved_relation_embeddings = deter_dists.detach()
+        else:
+            self.saved_relation_embeddings = None
+
         add_losses = {}
 
         predicate_proto = self.proto_emb     
@@ -1704,7 +1710,13 @@ class VCTreePredictor_DPL(nn.Module):
                 prod_rep = prod_rep * union_features
 
         deter_dists = self.rel_compress(prod_rep)
-        
+
+        # Save relation embeddings for visualization (only during inference)
+        if not self.training:
+            self.saved_relation_embeddings = deter_dists.detach()
+        else:
+            self.saved_relation_embeddings = None
+
         add_losses = {}
 
         predicate_proto = self.proto_emb     

@@ -66,6 +66,12 @@ def main():
 
     cfg.merge_from_file(args.config_file)
     cfg.merge_from_list(args.opts)
+
+    # Add options for saving relation embeddings
+    cfg.SAVE_RELATION_EMBEDDINGS = True
+    if not hasattr(cfg, 'RELATION_EMBEDDINGS_PATH'):
+        cfg.RELATION_EMBEDDINGS_PATH = "/root/autodl-tmp/visualize/relation_embeddings.pkl"
+
     cfg.freeze()
 
     save_dir = ""
@@ -117,7 +123,11 @@ def main():
 
     if cfg.OUTPUT_DIR:
         for idx, dataset_name in enumerate(dataset_names):
-            output_folder = os.path.join(cfg.OUTPUT_DIR, "inference", 'model_' + str(iteration))
+            # Use model weight filename for output folder name
+            weight_path = cfg.MODEL.WEIGHT
+            weight_filename = os.path.basename(weight_path)  # e.g., "model_0014000.pth"
+            model_name = os.path.splitext(weight_filename)[0]  # e.g., "model_0014000"
+            output_folder = os.path.join(cfg.OUTPUT_DIR, "inference", model_name)
             mkdir(output_folder)
             output_folders[idx] = output_folder
     data_loaders_val = make_data_loader(cfg, mode="test", is_distributed=distributed)

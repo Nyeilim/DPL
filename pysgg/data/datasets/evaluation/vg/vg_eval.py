@@ -14,6 +14,7 @@ from pysgg.data.datasets.evaluation.coco.coco_eval import COCOResults
 from pysgg.data.datasets.evaluation.vg.sgg_eval import SGRecall, SGNoGraphConstraintRecall, \
     SGZeroShotRecall, SGPairAccuracy, SGMeanRecall, SGStagewiseRecall, SGNGMeanRecall
 from pysgg.data.datasets.visual_genome import HEAD, TAIL, BODY
+from pysgg.config import cfg
 
 eval_times = 0
 
@@ -321,6 +322,14 @@ def do_vg_evaluation(
         result_str += eval_zeroshot_recall.generate_print_string(mode)
         result_str += eval_mean_recall.generate_print_string(mode)
         result_str += eval_ng_mean_recall.generate_print_string(mode)
+
+        # Generate JSON files for PredCls task with Graph Constraint only
+        # Only generate JSON when using graph constraint (SGMeanRecall), not no-graph constraint (SGNGMeanRecall)
+        if mode == 'predcls' and 'eval_mean_recall' in evaluator:
+            # Save JSON files to visualization directory
+            visualize_dir = "/root/autodl-tmp/visualize"
+            # Pass original output_folder for loading predictions, visualize_dir for saving JSONs
+            save_predcls_json_files(eval_mean_recall, evaluator, output_folder, visualize_dir, mode, dataset)
         result_str += eval_stagewise_recall.generate_print_string(mode)
         result_str += longtail_part_res_str
         result_str += f"(Non-Graph-Constraint) {ng_longtail_part_res_str}"
@@ -525,3 +534,139 @@ def generate_attributes_target(attributes, num_attributes):
                 attribute_targets[idx, att_id] = 1
 
     return attribute_targets
+
+
+def save_predcls_json_files(eval_mean_recall, evaluator, checkpoint_folder, visualize_dir, mode, dataset):
+    """
+    Generate JSON files for PredCls task:
+    1. per_predicate_recall.json - R@50 and R@100 for each predicate
+    2. recall_confidence_summary.json - Confidence statistics for recalled samples
+    """
+    import torch.nn.functional as F
+
+    # Get predicate labels
+    predicate_labels = [label for label in dataset.ind_to_predicates if label != '__background__']
+
+    # Get recall data
+    mean_recall_key = f"{mode}_mean_recall_list"
+    if mean_recall_key not in eval_mean_recall.result_dict:
+        return
+
+    # 1. Generate per_predicate_recall.json
+    per_predicate_data = {
+        "overall_stats": {
+            "mean_recall_50": float(np.mean(eval_mean_recall.result_dict[mean_recall_key][50])),
+            "mean_recall_100": float(np.mean(eval_mean_recall.result_dict[mean_recall_key][100])),
+            "std_recall_50": float(np.std(eval_mean_recall.result_dict[mean_recall_key][50])),
+            "std_recall_100": float(np.std(eval_mean_recall.result_dict[mean_recall_key][100])),
+        },
+        "per_predicate": [
+            {
+                "predicate": predicate,
+                "recall_50": float(eval_mean_recall.result_dict[mean_recall_key][50][i]),
+                "recall_100": float(eval_mean_recall.result_dict[mean_recall_key][100][i])
+            }
+            for i, predicate in enumerate(predicate_labels)
+        ]
+    }
+
+    # Save per-predicate recall to visualize directory
+    recall_json_path = os.path.join(visualize_dir, 'dpl_per_predicate_recall.json')
+    with open(recall_json_path, 'w') as f:
+        json.dump(per_predicate_data, f, indent=2)
+    print(f"Per-predicate recall saved to: {recall_json_path}")
+
+    # 2. Generate recall_confidence_summary.json
+    # Load predictions to extract confidence information
+    predictions_path = os.path.join(checkpoint_folder, "eval_results.pytorch")
+    if not os.path.exists(predictions_path):
+        print("Warning: eval_results.pytorch not found, skipping confidence extraction")
+        return
+
+    loaded_results = torch.load(predictions_path, map_location=torch.device('cpu'))
+    predictions = loaded_results.get('predictions', [])
+    groundtruths = loaded_results.get('groundtruths', [])
+
+    # Calculate confidence statistics
+    predicate_stats = {}
+    all_confidences = []
+    total_recalled = 0
+
+    for image_idx, prediction in enumerate(predictions):
+        # Get ground truth and prediction scores
+        rel_scores = prediction.get_field('pred_rel_scores').detach().cpu().numpy()
+        # relation_labels is in groundtruth, not prediction
+        groundtruth = groundtruths[image_idx]
+        gt_rels = groundtruth.get_field('relation_tuple').long().detach().cpu().numpy()
+
+        if len(gt_rels) == 0:
+            continue
+
+        # Process each ground truth relation
+        for rel_idx, gt_rel in enumerate(gt_rels):
+            if rel_idx >= rel_scores.shape[0]:
+                continue
+
+            gt_predicate_idx = int(gt_rel[2])
+            if gt_predicate_idx >= len(predicate_labels):
+                continue
+
+            gt_predicate = predicate_labels[gt_predicate_idx]
+
+            # Get prediction scores for this relation
+            pred_scores = rel_scores[rel_idx]
+
+            # Convert to probabilities
+            pred_probs = F.softmax(torch.tensor(pred_scores), dim=0).numpy()
+            gt_confidence = float(pred_probs[gt_predicate_idx])
+
+            # Check if recalled at R@50
+            top_k_indices = np.argsort(pred_probs)[-50:][::-1]
+            is_recalled = gt_predicate_idx in top_k_indices
+
+            if is_recalled:
+                total_recalled += 1
+                if gt_predicate not in predicate_stats:
+                    predicate_stats[gt_predicate] = []
+                predicate_stats[gt_predicate].append(gt_confidence)
+                all_confidences.append(gt_confidence)
+
+    # Calculate statistics for each predicate
+    confidence_summary = {
+        "predicate_stats": {},
+        "overall_stats": {
+            "total_recalled_samples": total_recalled,
+            "overall_avg_confidence": float(np.mean(all_confidences)) if all_confidences else 0.0,
+            "overall_std_confidence": float(np.std(all_confidences)) if all_confidences else 0.0
+        }
+    }
+
+    for predicate in predicate_labels:
+        if predicate in predicate_stats and len(predicate_stats[predicate]) > 0:
+            confidences = predicate_stats[predicate]
+            confidence_summary["predicate_stats"][predicate] = {
+                "total_recalled": len(confidences),
+                "avg_confidence": float(np.mean(confidences)),
+                "std_confidence": float(np.std(confidences)),
+                "min_confidence": float(np.min(confidences)),
+                "max_confidence": float(np.max(confidences)),
+                "median_confidence": float(np.median(confidences))
+            }
+        else:
+            confidence_summary["predicate_stats"][predicate] = {
+                "total_recalled": 0,
+                "avg_confidence": 0.0,
+                "std_confidence": 0.0,
+                "min_confidence": 0.0,
+                "max_confidence": 0.0,
+                "median_confidence": 0.0
+            }
+
+    # Save confidence summary to visualize directory
+    confidence_json_path = os.path.join(visualize_dir, 'dpl_recall_confidence_summary.json')
+    with open(confidence_json_path, 'w') as f:
+        json.dump(confidence_summary, f, indent=2)
+    print(f"Recall confidence summary saved to: {confidence_json_path}")
+
+    print(f"Total recalled samples: {total_recalled}")
+    print(f"Overall average confidence: {confidence_summary['overall_stats']['overall_avg_confidence']:.4f}")

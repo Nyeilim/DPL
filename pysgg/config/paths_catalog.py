@@ -6,7 +6,7 @@ import os
 
 
 class DatasetCatalog(object):
-    DATA_DIR = "/home/users/jaehyeong/papers/datasets" # put your path
+    DATA_DIR = "/root/autodl-tmp/datasets" # put your path
     DATASETS = {
         "coco_2017_train": {
             "img_dir": "coco/train2017",
