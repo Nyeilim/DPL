@@ -349,6 +349,84 @@ def visualize_prototypes_3d_pca(proto_emb, sigma, sample_embeddings, predicate_l
     plt.show()
 
 
+def compute_and_plot_distance_matrix(sample_embeddings, predicate_labels_all, predicate_labels_filtered, output_dir):
+    """Compute and plot average distance matrix between sample groups and their centroids.
+
+    For each predicate, compute the centroid of its samples (in original embedding space).
+    Then compute the average Euclidean distance from each predicate's samples to each centroid.
+    The resulting 5x5 matrix is plotted as a confusion-matrix-style heatmap.
+    """
+    # Group sample embeddings by predicate
+    predicate_embeddings = {pred: [] for pred in predicate_labels_filtered}
+    for sample in sample_embeddings:
+        gt_label_idx = sample['gt_label']
+        if gt_label_idx >= len(predicate_labels_all):
+            continue
+        predicate = predicate_labels_all[gt_label_idx]
+        if predicate in predicate_embeddings:
+            predicate_embeddings[predicate].append(sample['embedding'])
+
+    # Convert to numpy arrays and compute centroids
+    embeddings_arrays = {}
+    centroids = {}
+    for pred in predicate_labels_filtered:
+        if predicate_embeddings[pred]:
+            arr = np.array(predicate_embeddings[pred])
+            embeddings_arrays[pred] = arr
+            centroids[pred] = arr.mean(axis=0)
+
+    n = len(predicate_labels_filtered)
+    distance_matrix = np.zeros((n, n))
+
+    for i, pred_i in enumerate(predicate_labels_filtered):
+        if pred_i not in embeddings_arrays:
+            continue
+        samples_i = embeddings_arrays[pred_i]
+        for j, pred_j in enumerate(predicate_labels_filtered):
+            if pred_j not in centroids:
+                continue
+            centroid_j = centroids[pred_j]
+            # Average Euclidean distance from samples of pred_i to centroid of pred_j
+            dists = np.linalg.norm(samples_i - centroid_j, axis=1)
+            distance_matrix[i, j] = dists.mean()
+
+    print(f"\nDistance matrix (avg Euclidean distance: samples → centroids):")
+    for i, pred_i in enumerate(predicate_labels_filtered):
+        for j, pred_j in enumerate(predicate_labels_filtered):
+            print(f"  samples({pred_i}) → centroid({pred_j}): {distance_matrix[i, j]:.4f}")
+
+    # Plot heatmap
+    fig, ax = plt.subplots(figsize=(8, 7))
+    im = ax.imshow(distance_matrix, cmap='Blues')
+
+    # Add text annotations
+    vmax = distance_matrix.max()
+    for i in range(n):
+        for j in range(n):
+            val = distance_matrix[i, j]
+            color = 'white' if val > vmax * 0.65 else 'black'
+            ax.text(j, i, f'{val:.3f}', ha='center', va='center',
+                    fontsize=11, fontweight='bold', color=color)
+
+    ax.set_xticks(range(n))
+    ax.set_yticks(range(n))
+    ax.set_xticklabels(predicate_labels_filtered, fontsize=10, rotation=45, ha='right')
+    ax.set_yticklabels(predicate_labels_filtered, fontsize=10)
+    ax.set_xlabel('Centroid of', fontsize=12)
+    ax.set_ylabel('Samples of', fontsize=12)
+    ax.set_title('Avg Distance: Samples → Centroids\n(Original Embedding Space)',
+                 fontsize=13, fontweight='bold')
+
+    cbar = plt.colorbar(im, ax=ax)
+    cbar.set_label('Average Euclidean Distance', fontsize=11)
+
+    plt.tight_layout()
+    save_path = os.path.join(output_dir, 'distance_matrix.png')
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    print(f"Distance matrix saved to: {save_path}")
+    plt.show()
+
+
 def main():
     # Create output directory
     os.makedirs(output_dir, exist_ok=True)
@@ -402,6 +480,10 @@ def main():
     if do_3d:
         print(f"\nGenerating 3D PCA visualization...")
         visualize_prototypes_3d_pca(proto_emb, sigma, sample_embeddings, predicate_labels_filtered, predicate_labels_all, output_dir)
+
+    # Generate distance matrix heatmap
+    print(f"\nGenerating distance matrix...")
+    compute_and_plot_distance_matrix(sample_embeddings, predicate_labels_all, predicate_labels_filtered, output_dir)
 
     print("\nVisualization complete!")
     print(f"Prototypes: {len(predicate_labels_filtered)}")
